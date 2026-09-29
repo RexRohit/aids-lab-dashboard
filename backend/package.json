@@ -1,0 +1,19 @@
+{
+  "name": "aids-lab-dashboard-backend",
+  "version": "1.0.0",
+  "description": "Backend service for AI&DS Laboratory Audit Dashboard",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "generate-excel": "node utils/generateExcel.js",
+    "import-real-data": "node utils/importRealData.js"
+  },
+  "dependencies": {
+    "chokidar": "^3.6.0",
+    "cors": "^2.8.5",
+    "exceljs": "^4.4.0",
+    "express": "^4.19.2",
+    "socket.io": "^4.7.5"
+  }
+}

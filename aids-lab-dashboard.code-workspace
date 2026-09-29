@@ -1,0 +1,19 @@
+{
+  "folders": [
+    {
+      "name": "Full Project Root",
+      "path": "."
+    },
+    {
+      "name": "Backend Service",
+      "path": "backend"
+    },
+    {
+      "name": "Frontend React App",
+      "path": "frontend"
+    }
+  ],
+  "settings": {
+    "editor.tabSize": 2
+  }
+}
