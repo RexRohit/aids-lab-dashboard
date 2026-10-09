@@ -27,12 +27,14 @@ function initWatcher(io) {
         console.log('[Watcher] Re-reading Excel workbook and updating cache...');
         const updatedData = await excelService.readAuditWorkbook();
 
-        console.log('[Watcher] Emitting "excel-updated" event to all connected clients.');
-        io.emit('excel-updated', {
+        console.log('[Watcher] Emitting "dashboard:updated" and "excel-updated" events to all connected clients.');
+        const payload = {
           timestamp: updatedData.summary.lastSynced,
           summary: updatedData.summary,
           message: 'Excel audit file was modified and successfully re-synced.'
-        });
+        };
+        io.emit('dashboard:updated', payload);
+        io.emit('excel-updated', payload);
       } catch (err) {
         console.error('[Watcher] Error parsing updated Excel file:', err.message);
       }

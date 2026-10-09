@@ -4,6 +4,8 @@ import { fetchEquipment } from '../services/api';
 import EquipmentTable from '../components/EquipmentTable';
 import { RefreshCw, Monitor, Filter } from 'lucide-react';
 
+import socket from '../services/socket';
+
 export default function EquipmentPage() {
   const [searchParams] = useSearchParams();
   const initialStatus = searchParams.get('status') || 'all';
@@ -12,22 +14,36 @@ export default function EquipmentPage() {
   const [loading, setLoading] = useState(true);
   const [selectedLab, setSelectedLab] = useState('all');
 
-  useEffect(() => {
-    async function loadAllEquipment() {
-      try {
-        setLoading(true);
-        const res = await fetchEquipment();
-        if (res.success) {
-          setEquipmentData(res.data);
-        }
-      } catch (err) {
-        console.error('Failed to load equipment list:', err);
-      } finally {
-        setLoading(false);
+  const loadAllEquipment = React.useCallback(async (isBackground = false) => {
+    try {
+      if (!isBackground) setLoading(true);
+      const res = await fetchEquipment();
+      if (res.success) {
+        setEquipmentData(res.data);
       }
+    } catch (err) {
+      console.error('Failed to load equipment list:', err);
+    } finally {
+      if (!isBackground) setLoading(false);
     }
-    loadAllEquipment();
   }, []);
+
+  useEffect(() => {
+    loadAllEquipment(false);
+
+    const handleUpdate = () => {
+      console.log('⚡ EquipmentPage received live update event');
+      loadAllEquipment(true);
+    };
+
+    socket.on('dashboard:updated', handleUpdate);
+    socket.on('excel-updated', handleUpdate);
+
+    return () => {
+      socket.off('dashboard:updated', handleUpdate);
+      socket.off('excel-updated', handleUpdate);
+    };
+  }, [loadAllEquipment]);
 
   const filteredByLab = selectedLab === 'all'
     ? equipmentData

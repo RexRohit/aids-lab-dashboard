@@ -33,6 +33,7 @@ export default function Sidebar({ isCollapsed, toggleSidebar, labStats = [] }) {
   const secondaryNav = [
     { name: 'Equipment', path: '/equipment', icon: Monitor },
     { name: 'Reports', path: '/reports', icon: BarChart3 },
+    { name: 'Admin Portal', path: '/admin/dashboard', icon: ShieldCheck },
   ];
 
   return (

@@ -12,7 +12,7 @@ export function useAuditData() {
   const [formattedSyncTime, setFormattedSyncTime] = useState('Recently');
   const [syncNotification, setSyncNotification] = useState(null);
 
-  const loadSummaryData = useCallback(async (showToast = false) => {
+  const loadSummaryData = useCallback(async (showToast = false, toastMessage = null) => {
     try {
       setLoading(true);
       const res = await fetchSummary();
@@ -25,7 +25,7 @@ export function useAuditData() {
         if (showToast) {
           setSyncNotification({
             id: Date.now(),
-            message: 'Dashboard data updated from Excel workbook!'
+            message: toastMessage || 'Dashboard data updated from Excel / Google Sheets!'
           });
         }
       }
@@ -54,34 +54,38 @@ export function useAuditData() {
     return () => clearInterval(interval);
   }, [lastSynced]);
 
-  // Socket.IO event listener
+  // Socket.IO event listener with auto-refetch on reconnect
   useEffect(() => {
     loadSummaryData(false);
 
     function onConnect() {
       setIsConnected(true);
+      // Auto-refetch latest data when reconnected (crucial for Render sleeping service wakeup)
+      loadSummaryData(false);
     }
 
     function onDisconnect() {
       setIsConnected(false);
     }
 
-    function onExcelUpdated(data) {
-      console.log('⚡ Socket event "excel-updated" received:', data);
+    function onDataUpdated(data) {
+      console.log('⚡ Live update event received from backend:', data);
       if (data && data.timestamp) {
         setLastSynced(new Date(data.timestamp));
       }
-      loadSummaryData(true);
+      loadSummaryData(true, data?.message || 'Dashboard statistics updated live!');
     }
 
     socket.on('connect', onConnect);
     socket.on('disconnect', onDisconnect);
-    socket.on('excel-updated', onExcelUpdated);
+    socket.on('dashboard:updated', onDataUpdated);
+    socket.on('excel-updated', onDataUpdated);
 
     return () => {
       socket.off('connect', onConnect);
       socket.off('disconnect', onDisconnect);
-      socket.off('excel-updated', onExcelUpdated);
+      socket.off('dashboard:updated', onDataUpdated);
+      socket.off('excel-updated', onDataUpdated);
     };
   }, [loadSummaryData]);
 
@@ -96,6 +100,6 @@ export function useAuditData() {
     formattedSyncTime,
     syncNotification,
     clearNotification,
-    refreshData: () => loadSummaryData(true)
+    refreshData: () => loadSummaryData(true, 'Manual sync completed!')
   };
 }

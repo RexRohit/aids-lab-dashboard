@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { Link } from 'react-router-dom';
 import { 
   Sun, 
   Moon, 
@@ -7,7 +8,8 @@ import {
   WifiOff, 
   Clock,
   FileSpreadsheet,
-  Layers
+  Layers,
+  ShieldCheck
 } from 'lucide-react';
 import { triggerRefresh } from '../services/api';
 
@@ -103,6 +105,16 @@ export default function Header({
         >
           <RefreshCw className={`w-4 h-4 ${isRefreshing ? 'animate-spin text-indigo-600 dark:text-indigo-400' : ''}`} />
         </button>
+
+        {/* Admin Portal Button */}
+        <Link
+          to="/admin/dashboard"
+          className="px-3 py-1.5 rounded-xl text-indigo-600 dark:text-indigo-400 bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-950/50 dark:hover:bg-indigo-900/60 transition-all border border-indigo-200 dark:border-indigo-800 flex items-center gap-1.5 text-xs font-bold"
+          title="Admin Management Portal"
+        >
+          <ShieldCheck className="w-4 h-4 text-indigo-500" />
+          <span className="hidden sm:inline">Admin</span>
+        </Link>
 
         {/* Light/Dark Toggle */}
         <button

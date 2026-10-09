@@ -18,32 +18,48 @@ import {
   Maximize2
 } from 'lucide-react';
 
+import socket from '../services/socket';
+
 export default function LabPage() {
   const { id } = useParams();
   const [labData, setLabData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
-  useEffect(() => {
-    async function getLabDetails() {
-      try {
-        setLoading(true);
-        const res = await fetchLabById(id);
-        if (res.success) {
-          setLabData(res.data);
-          setError(null);
-        } else {
-          setError(res.message || 'Lab not found');
-        }
-      } catch (err) {
-        console.error(`Failed to fetch lab details for ${id}:`, err);
-        setError(err.message || 'Failed to connect to server');
-      } finally {
-        setLoading(false);
+  const getLabDetails = React.useCallback(async (isBackground = false) => {
+    try {
+      if (!isBackground) setLoading(true);
+      const res = await fetchLabById(id);
+      if (res.success) {
+        setLabData(res.data);
+        setError(null);
+      } else {
+        setError(res.message || 'Lab not found');
       }
+    } catch (err) {
+      console.error(`Failed to fetch lab details for ${id}:`, err);
+      if (!isBackground) setError(err.message || 'Failed to connect to server');
+    } finally {
+      if (!isBackground) setLoading(false);
     }
-    getLabDetails();
   }, [id]);
+
+  useEffect(() => {
+    getLabDetails(false);
+
+    const handleUpdate = () => {
+      console.log(`⚡ LabPage received live update event for ${id}`);
+      getLabDetails(true);
+    };
+
+    socket.on('dashboard:updated', handleUpdate);
+    socket.on('excel-updated', handleUpdate);
+
+    return () => {
+      socket.off('dashboard:updated', handleUpdate);
+      socket.off('excel-updated', handleUpdate);
+    };
+  }, [id, getLabDetails]);
 
   if (loading) {
     return (

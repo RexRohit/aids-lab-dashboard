@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const excelService = require('../services/excelService');
+const googleSheetsService = require('../services/googleSheetsService');
 
 // GET /api/summary - Dashboard KPIs, Lab summaries, Recent Issues
 router.get('/summary', async (req, res) => {
@@ -64,22 +65,31 @@ router.get('/equipment', async (req, res) => {
   }
 });
 
-// POST /api/refresh - Force re-parse Excel file and emit event
+// POST /api/refresh - Force re-parse Excel file or Google Sheets and emit event
 router.post('/refresh', async (req, res) => {
   try {
-    const updatedData = await excelService.readAuditWorkbook();
+    let updatedData = null;
+    if (googleSheetsService.isConfigured()) {
+      updatedData = await excelService.syncFromGoogleSheets();
+    }
+    if (!updatedData) {
+      updatedData = await excelService.readAuditWorkbook();
+    }
+
     const io = req.app.get('io');
-    if (io) {
-      io.emit('excel-updated', {
+    if (io && updatedData && updatedData.summary) {
+      const payload = {
         timestamp: updatedData.summary.lastSynced,
         summary: updatedData.summary,
         message: 'Manual sync triggered'
-      });
+      };
+      io.emit('dashboard:updated', payload);
+      io.emit('excel-updated', payload);
     }
     res.json({
       success: true,
       message: 'Workbook manually re-synced',
-      data: updatedData.summary
+      data: updatedData ? updatedData.summary : {}
     });
   } catch (err) {
     console.error('[API] Error refreshing workbook:', err);

@@ -10,26 +10,42 @@ import {
   FileSpreadsheet
 } from 'lucide-react';
 
+import socket from '../services/socket';
+
 export default function ReportsPage() {
   const [summaryData, setSummaryData] = useState(null);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    async function loadReportsData() {
-      try {
-        setLoading(true);
-        const res = await fetchSummary();
-        if (res.success) {
-          setSummaryData(res.data);
-        }
-      } catch (err) {
-        console.error('Failed to load reports data:', err);
-      } finally {
-        setLoading(false);
+  const loadReportsData = React.useCallback(async (isBackground = false) => {
+    try {
+      if (!isBackground) setLoading(true);
+      const res = await fetchSummary();
+      if (res.success) {
+        setSummaryData(res.data);
       }
+    } catch (err) {
+      console.error('Failed to load reports data:', err);
+    } finally {
+      if (!isBackground) setLoading(false);
     }
-    loadReportsData();
   }, []);
+
+  useEffect(() => {
+    loadReportsData(false);
+
+    const handleUpdate = () => {
+      console.log('⚡ ReportsPage received live update event');
+      loadReportsData(true);
+    };
+
+    socket.on('dashboard:updated', handleUpdate);
+    socket.on('excel-updated', handleUpdate);
+
+    return () => {
+      socket.off('dashboard:updated', handleUpdate);
+      socket.off('excel-updated', handleUpdate);
+    };
+  }, [loadReportsData]);
 
   const handlePrint = () => {
     window.print();
