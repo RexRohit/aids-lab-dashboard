@@ -20,10 +20,6 @@ api.interceptors.request.use((config) => {
   if (token) {
     config.headers.Authorization = `Bearer ${token}`;
   }
-  // When payload is FormData, delete Content-Type so Axios & browser automatically append multipart boundary
-  if (config.data instanceof FormData) {
-    delete config.headers['Content-Type'];
-  }
   return config;
 }, (error) => {
   return Promise.reject(error);
@@ -127,15 +123,7 @@ export const batchSaveAdminLab = async (labId, records, labInfo) => {
   return response.data;
 };
 
-export const previewAdminExcel = async (formData) => {
-  const response = await api.post('/api/admin/preview-excel', formData);
-  return response.data;
-};
 
-export const uploadAdminExcel = async (formData) => {
-  const response = await api.post('/api/admin/upload-excel', formData);
-  return response.data;
-};
 
 export const getAdminStatus = async () => {
   const response = await api.get('/api/admin/status');

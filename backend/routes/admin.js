@@ -1,46 +1,11 @@
 const express = require('express');
 const router = express.Router();
-const multer = require('multer');
 const { requireAdmin } = require('../middleware/auth');
 const excelService = require('../services/excelService');
 const googleSheetsService = require('../services/googleSheetsService');
 
-// Multer in-memory storage for uploaded Excel files
-const upload = multer({
-  storage: multer.memoryStorage(),
-  limits: { fileSize: 15 * 1024 * 1024 }, // 15 MB
-  fileFilter: (req, file, cb) => {
-    if (
-      file.mimetype === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' ||
-      file.mimetype === 'application/vnd.ms-excel' ||
-      file.originalname.match(/\.(xlsx|xls)$/i)
-    ) {
-      cb(null, true);
-    } else {
-      cb(new Error('Only Excel spreadsheet files (.xlsx, .xls) are allowed.'));
-    }
-  }
-});
-
-// Multer error-handling middleware wrapper
-const handleMulterUpload = (req, res, next) => {
-  upload.single('excelFile')(req, res, (err) => {
-    if (err instanceof multer.MulterError) {
-      console.warn(`[Admin Upload] Multer error: ${err.code} - ${err.message}`);
-      if (err.code === 'LIMIT_FILE_SIZE') {
-        return res.status(400).json({ success: false, error: 'File size exceeds maximum limit of 15MB.' });
-      }
-      return res.status(400).json({ success: false, error: `Upload error: ${err.message}` });
-    } else if (err) {
-      console.warn(`[Admin Upload] File filter error: ${err.message}`);
-      return res.status(400).json({ success: false, error: err.message });
-    }
-    next();
-  });
-};
-
 // Helper to broadcast Socket.IO events to all connected clients
-function broadcastUpdate(req, updatedSummary, message = 'Excel audit data updated by administrator') {
+function broadcastUpdate(req, updatedSummary, message = 'Audit data updated by administrator') {
   const io = req.app.get('io');
   if (io) {
     const payload = {
@@ -49,7 +14,6 @@ function broadcastUpdate(req, updatedSummary, message = 'Excel audit data update
       message
     };
     io.emit('dashboard:updated', payload);
-    io.emit('excel-updated', payload);
     console.log(`[Socket.IO] Broadcasted dashboard:updated event. Total: ${updatedSummary.totalComputers}, Working: ${updatedSummary.workingComputers}, Faulty: ${updatedSummary.faultyComputers}`);
   }
 }
@@ -212,59 +176,6 @@ router.post('/save', async (req, res) => {
     });
   } catch (err) {
     console.error('[Admin API] Error batch saving lab:', err);
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-// POST /api/admin/preview-excel - Validate uploaded spreadsheet and return preview WITHOUT modifying Google Sheets
-router.post('/preview-excel', handleMulterUpload, async (req, res) => {
-  try {
-    if (!req.file) {
-      return res.status(400).json({ success: false, error: 'No Excel file provided for preview.' });
-    }
-
-    console.log(`[Admin Preview] Parsing workbook for preview: "${req.file.originalname}" (${(req.file.size / 1024).toFixed(1)} KB)`);
-
-    const preview = await excelService.validateAndPreviewExcel(req.file.buffer, req.file.originalname);
-
-    if (!preview.isValid) {
-      return res.status(400).json({
-        success: false,
-        error: `Validation failed: ${preview.validationErrors.join(' | ')}`,
-        preview
-      });
-    }
-
-    res.json({
-      success: true,
-      message: 'Spreadsheet structure validated successfully.',
-      preview
-    });
-  } catch (err) {
-    console.error('[Admin Preview] Error during preview validation:', err.message);
-    res.status(400).json({ success: false, error: err.message });
-  }
-});
-
-// POST /api/admin/upload-excel - Confirmed import and persistence to Google Sheets
-router.post('/upload-excel', handleMulterUpload, async (req, res) => {
-  try {
-    if (!req.file) {
-      return res.status(400).json({ success: false, error: 'No Excel file uploaded.' });
-    }
-
-    console.log(`[Admin Upload] Confirmed import request for file: "${req.file.originalname}" (${(req.file.size / 1024).toFixed(1)} KB)`);
-
-    const result = await excelService.importUploadedExcel(req.file.buffer, req.file.originalname);
-    broadcastUpdate(req, result.summary, `Excel audit workbook updated: ${req.file.originalname}`);
-
-    res.json({
-      success: true,
-      message: `Excel workbook "${req.file.originalname}" successfully imported and synced to Google Sheets.`,
-      data: result
-    });
-  } catch (err) {
-    console.error('[Admin API] Error uploading Excel file:', err);
     res.status(500).json({ success: false, error: err.message });
   }
 });

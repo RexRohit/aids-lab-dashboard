@@ -6,9 +6,7 @@ import {
   batchSaveAdminLab, 
   deleteAdminRecord, 
   addAdminRecord, 
-  updateAdminLabInfo, 
-  previewAdminExcel,
-  uploadAdminExcel,
+  updateAdminLabInfo,
   syncGoogleSheets 
 } from '../services/api';
 import socket from '../services/socket';
@@ -25,15 +23,11 @@ import {
   AlertCircle, 
   Check, 
   X, 
-  UploadCloud, 
   Cpu, 
   Settings, 
   ChevronRight,
-  ShieldCheck,
   Building2,
-  FileUp,
-  SlidersHorizontal,
-  Info
+  SlidersHorizontal
 } from 'lucide-react';
 
 export default function AdminExcelEditor() {
@@ -56,7 +50,6 @@ export default function AdminExcelEditor() {
   // Modals state
   const [addModalOpen, setAddModalOpen] = useState(false);
   const [editLabModalOpen, setEditLabModalOpen] = useState(false);
-  const [uploadModalOpen, setUploadModalOpen] = useState(false);
   const [deleteConfirmId, setDeleteConfirmId] = useState(null);
 
   // Form states
@@ -89,13 +82,6 @@ export default function AdminExcelEditor() {
     misc: ''
   });
 
-  const [selectedUploadFile, setSelectedUploadFile] = useState(null);
-  const [analyzingFile, setAnalyzingFile] = useState(false);
-  const [previewData, setPreviewData] = useState(null);
-  const [uploadError, setUploadError] = useState(null);
-  const [uploading, setUploading] = useState(false);
-  const [isDragging, setIsDragging] = useState(false);
-  const fileInputRef = React.useRef(null);
 
   // Load records from backend
   const loadRecords = React.useCallback(async (keepDirty = false) => {
@@ -124,11 +110,9 @@ export default function AdminExcelEditor() {
     };
 
     socket.on('dashboard:updated', handleExternalUpdate);
-    socket.on('excel-updated', handleExternalUpdate);
 
     return () => {
       socket.off('dashboard:updated', handleExternalUpdate);
-      socket.off('excel-updated', handleExternalUpdate);
     };
   }, [loadRecords]);
 
@@ -353,84 +337,6 @@ export default function AdminExcelEditor() {
     }
   };
 
-  // Handle file selection from input or drag-and-drop -> Trigger validation & preview
-  const handleFileSelect = async (file) => {
-    if (!file) return;
-
-    if (!file.name.match(/\.(xlsx|xls)$/i)) {
-      setUploadError('Only Excel spreadsheet files (.xlsx, .xls) are allowed.');
-      setSelectedUploadFile(null);
-      setPreviewData(null);
-      return;
-    }
-
-    setSelectedUploadFile(file);
-    setUploadError(null);
-    setPreviewData(null);
-    setAnalyzingFile(true);
-
-    try {
-      const formData = new FormData();
-      formData.append('excelFile', file);
-
-      const res = await previewAdminExcel(formData);
-      if (res.success && res.preview) {
-        setPreviewData(res.preview);
-      } else {
-        setUploadError(res.error || 'Spreadsheet validation failed.');
-      }
-    } catch (err) {
-      console.error('Spreadsheet preview error:', err);
-      const errMsg = err.response?.data?.error || err.message || 'Failed to inspect Excel file schema.';
-      setUploadError(errMsg);
-      if (err.response?.data?.preview) {
-        setPreviewData(err.response.data.preview);
-      }
-    } finally {
-      setAnalyzingFile(false);
-    }
-  };
-
-  // Confirm Import -> Commit to Google Sheets & broadcast via Socket.IO
-  const handleConfirmImport = async () => {
-    if (!selectedUploadFile) return;
-
-    setUploading(true);
-    setUploadError(null);
-    try {
-      const formData = new FormData();
-      formData.append('excelFile', selectedUploadFile);
-
-      const res = await uploadAdminExcel(formData);
-      if (res.success) {
-        showToast(`Excel workbook "${selectedUploadFile.name}" successfully imported and synced to Google Sheets!`);
-        setUploadModalOpen(false);
-        setSelectedUploadFile(null);
-        setPreviewData(null);
-        setUploadError(null);
-        await loadRecords(false);
-      } else {
-        setUploadError(res.error || 'Failed to import workbook.');
-        showToast(res.error || 'Failed to import workbook.', true);
-      }
-    } catch (err) {
-      console.error('Import error:', err);
-      const errMsg = err.response?.data?.error || err.message || 'Error saving spreadsheet to Google Sheets.';
-      setUploadError(errMsg);
-      showToast(errMsg, true);
-    } finally {
-      setUploading(false);
-    }
-  };
-
-  const handleResetUploadModal = () => {
-    setUploadModalOpen(false);
-    setSelectedUploadFile(null);
-    setPreviewData(null);
-    setUploadError(null);
-    setAnalyzingFile(false);
-    setIsDragging(false);
-  };
 
   const dirtyCount = Object.keys(dirtyRecords).length;
 
@@ -489,14 +395,6 @@ export default function AdminExcelEditor() {
                 <span>Lab Info & Specs</span>
               </button>
 
-              <button
-                onClick={() => setUploadModalOpen(true)}
-                className="px-3.5 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold border border-slate-700 flex items-center gap-1.5 transition-colors"
-                title="Upload and import Excel spreadsheet"
-              >
-                <FileUp className="w-4 h-4 text-indigo-400" />
-                <span>Upload Spreadsheet</span>
-              </button>
 
               {/* STICKY / PROMINENT SAVE BUTTON */}
               <button
@@ -1102,216 +1000,6 @@ export default function AdminExcelEditor() {
         </div>
       )}
 
-      {/* Upload Spreadsheet Modal with Preview & Confirmation Workflow */}
-      {uploadModalOpen && (
-        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 max-w-lg w-full shadow-2xl space-y-5 animate-in fade-in duration-200">
-            {/* Modal Header */}
-            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
-              <div className="flex items-center gap-2.5">
-                <div className="p-2 rounded-xl bg-indigo-500/10 text-indigo-400 border border-indigo-500/20">
-                  <UploadCloud className="w-5 h-5" />
-                </div>
-                <div>
-                  <h3 className="text-base font-bold text-white leading-tight">
-                    Upload Audit Spreadsheet (.xlsx)
-                  </h3>
-                  <p className="text-[11px] text-slate-400">
-                    Preview and validate workbook structure before persisting to Google Sheets
-                  </p>
-                </div>
-              </div>
-              <button 
-                onClick={handleResetUploadModal} 
-                className="text-slate-400 hover:text-white p-1 rounded-lg hover:bg-slate-800 transition-colors"
-                disabled={uploading}
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            {/* Error Banner */}
-            {uploadError && (
-              <div className="p-4 rounded-2xl bg-rose-950/70 border border-rose-800 text-rose-200 text-xs space-y-2">
-                <div className="flex items-center gap-2 font-bold text-rose-300">
-                  <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
-                  <span>Validation Error</span>
-                </div>
-                <p className="leading-relaxed text-rose-200/90">{uploadError}</p>
-                <button
-                  type="button"
-                  onClick={() => { setSelectedUploadFile(null); setPreviewData(null); setUploadError(null); }}
-                  className="text-indigo-300 hover:text-indigo-200 underline font-semibold text-[11px] block pt-1"
-                >
-                  Choose a different file
-                </button>
-              </div>
-            )}
-
-            {/* State 1: Analyzing Loading Indicator */}
-            {analyzingFile && (
-              <div className="py-12 px-6 text-center space-y-3 bg-slate-950/60 rounded-2xl border border-indigo-500/30">
-                <RefreshCw className="w-9 h-9 text-indigo-400 animate-spin mx-auto" />
-                <div className="text-sm font-bold text-white">Analyzing & Validating Spreadsheet...</div>
-                <p className="text-xs text-slate-400 max-w-xs mx-auto">
-                  Inspecting worksheets, verifying equipment schema columns, and parsing records...
-                </p>
-              </div>
-            )}
-
-            {/* State 2: File Dropzone (Visible when no file selected or file error) */}
-            {!analyzingFile && !previewData && (
-              <div 
-                onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
-                onDragLeave={() => setIsDragging(false)}
-                onDrop={(e) => {
-                  e.preventDefault();
-                  setIsDragging(false);
-                  const file = e.dataTransfer.files?.[0];
-                  if (file) handleFileSelect(file);
-                }}
-                onClick={() => fileInputRef.current?.click()}
-                className={`border-2 border-dashed rounded-2xl p-8 text-center cursor-pointer transition-all bg-slate-950/40 ${
-                  isDragging 
-                    ? 'border-indigo-400 bg-indigo-950/20 scale-[0.99]' 
-                    : 'border-slate-700 hover:border-indigo-500 hover:bg-slate-950/70'
-                }`}
-              >
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  id="excelFileInputModal"
-                  accept=".xlsx, .xls"
-                  onChange={(e) => {
-                    const file = e.target.files?.[0];
-                    e.target.value = '';
-                    if (file) handleFileSelect(file);
-                  }}
-                  className="hidden"
-                />
-                <div className="space-y-3">
-                  <div className="w-14 h-14 rounded-2xl bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 flex items-center justify-center mx-auto">
-                    <FileSpreadsheet className="w-7 h-7" />
-                  </div>
-                  <div>
-                    <span className="text-sm font-bold text-white block">
-                      Click to browse or drag & drop .xlsx file
-                    </span>
-                    <span className="text-xs text-slate-400 block mt-1">
-                      Supports AI&DS Laboratory audit workbook (SWL, CL-II/AR-VR, DSL, AIL, OSL, PL)
-                    </span>
-                  </div>
-                  <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-slate-800 text-[11px] font-semibold text-slate-300 border border-slate-700">
-                    <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
-                    <span>Validates schema before saving to Google Sheets</span>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* State 3: Validated Preview Details (Preview step before confirmation) */}
-            {!analyzingFile && previewData && previewData.isValid && (
-              <div className="space-y-4">
-                {/* File Header Card */}
-                <div className="p-3.5 rounded-2xl bg-slate-950/80 border border-slate-800 flex items-center justify-between">
-                  <div className="flex items-center gap-3">
-                    <div className="p-2 rounded-xl bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-                      <FileSpreadsheet className="w-5 h-5" />
-                    </div>
-                    <div>
-                      <div className="text-xs font-bold text-white truncate max-w-[240px]">
-                        {previewData.fileName}
-                      </div>
-                      <div className="text-[10px] text-slate-400">
-                        {(previewData.fileSizeBytes / 1024).toFixed(1)} KB • {previewData.sheetsCount} sheets
-                      </div>
-                    </div>
-                  </div>
-                  <span className="px-2.5 py-1 rounded-full bg-emerald-500/20 text-emerald-300 text-[10px] font-bold border border-emerald-500/30 flex items-center gap-1">
-                    <CheckCircle2 className="w-3.5 h-3.5" />
-                    <span>Schema Valid</span>
-                  </span>
-                </div>
-
-                {/* Metrics Summary Grid */}
-                <div className="grid grid-cols-3 gap-2.5">
-                  <div className="p-3 rounded-2xl bg-slate-950/50 border border-slate-800 text-center">
-                    <span className="text-[10px] uppercase font-bold text-slate-400 block">Total Records</span>
-                    <span className="text-xl font-black text-white">{previewData.totalRecords}</span>
-                  </div>
-                  <div className="p-3 rounded-2xl bg-emerald-950/30 border border-emerald-900/50 text-center">
-                    <span className="text-[10px] uppercase font-bold text-emerald-400 block">Working Units</span>
-                    <span className="text-xl font-black text-emerald-300">{previewData.workingRecords}</span>
-                  </div>
-                  <div className="p-3 rounded-2xl bg-rose-950/30 border border-rose-900/50 text-center">
-                    <span className="text-[10px] uppercase font-bold text-rose-400 block">Faulty Units</span>
-                    <span className="text-xl font-black text-rose-300">{previewData.faultyRecords}</span>
-                  </div>
-                </div>
-
-                {/* Detected Labs Breakdown */}
-                <div className="p-3.5 rounded-2xl bg-slate-950/50 border border-slate-800 space-y-2">
-                  <span className="text-[11px] font-bold text-slate-300 block uppercase tracking-wider">
-                    Detected Laboratories ({previewData.detectedLabsCount})
-                  </span>
-                  <div className="flex flex-wrap gap-1.5 max-h-32 overflow-y-auto pr-1">
-                    {previewData.labs.map((lab, i) => (
-                      <div 
-                        key={i}
-                        className="px-2.5 py-1 rounded-xl bg-slate-900 border border-slate-800 text-[11px] flex items-center gap-1.5"
-                      >
-                        <span className="font-bold text-indigo-300">{lab.code}</span>
-                        <span className="text-slate-400">({lab.systemsCount} systems)</span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Explicit Safety Notice */}
-                <div className="p-3 rounded-xl bg-indigo-950/30 border border-indigo-900/50 text-[11px] text-indigo-300 flex items-start gap-2">
-                  <Info className="w-4 h-4 text-indigo-400 shrink-0 mt-0.5" />
-                  <span>
-                    Google Sheets and the public dashboard will only update after you click <strong>Confirm Import</strong> below.
-                  </span>
-                </div>
-              </div>
-            )}
-
-            {/* Modal Action Buttons */}
-            <div className="flex items-center justify-end gap-3 pt-3 border-t border-slate-800">
-              <button
-                type="button"
-                onClick={handleResetUploadModal}
-                disabled={uploading}
-                className="px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold transition-colors disabled:opacity-50"
-              >
-                {previewData ? 'Cancel' : 'Close'}
-              </button>
-
-              {previewData && previewData.isValid && (
-                <button
-                  type="button"
-                  onClick={handleConfirmImport}
-                  disabled={uploading}
-                  className="px-5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold transition-all shadow-lg shadow-emerald-600/30 disabled:opacity-50 flex items-center gap-2"
-                >
-                  {uploading ? (
-                    <>
-                      <RefreshCw className="w-4 h-4 animate-spin" />
-                      <span>Syncing to Google Sheets...</span>
-                    </>
-                  ) : (
-                    <>
-                      <CheckCircle2 className="w-4 h-4" />
-                      <span>Confirm Import to Google Sheets</span>
-                    </>
-                  )}
-                </button>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

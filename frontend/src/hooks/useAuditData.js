@@ -25,7 +25,7 @@ export function useAuditData() {
         if (showToast) {
           setSyncNotification({
             id: Date.now(),
-            message: toastMessage || 'Dashboard data updated from Excel / Google Sheets!'
+            message: toastMessage || 'Dashboard data updated from Google Sheets!'
           });
         }
       }
@@ -79,13 +79,11 @@ export function useAuditData() {
     socket.on('connect', onConnect);
     socket.on('disconnect', onDisconnect);
     socket.on('dashboard:updated', onDataUpdated);
-    socket.on('excel-updated', onDataUpdated);
 
     return () => {
       socket.off('connect', onConnect);
       socket.off('disconnect', onDisconnect);
       socket.off('dashboard:updated', onDataUpdated);
-      socket.off('excel-updated', onDataUpdated);
     };
   }, [loadSummaryData]);
 
