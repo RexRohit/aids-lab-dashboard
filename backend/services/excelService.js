@@ -8,6 +8,7 @@ class ExcelService {
     this.excelFilePath = path.join(__dirname, '..', 'data', 'AI&DS Lab Audit sheet 2026-27.xlsx');
     this.cachedData = null;
     this.lastSynced = null;
+    this.isSyncingOrUploading = false;
   }
 
   getFilePath() {
@@ -32,10 +33,10 @@ class ExcelService {
   }
 
   /**
-   * Recalculate all metrics and KPIs across all laboratories
+   * Pure recalculation of metrics and KPIs for any given labs array
    */
-  recalculateMetrics() {
-    if (!this.cachedData || !this.cachedData.labs) return;
+  computeAuditMetrics(labs) {
+    if (!labs) return null;
 
     let totalComputers = 0;
     let totalWorking = 0;
@@ -43,12 +44,11 @@ class ExcelService {
     const recentIssues = [];
     const supplierCounts = {};
 
-    this.cachedData.labs.forEach((lab) => {
+    labs.forEach((lab) => {
       let labWorking = 0;
       let labFaulty = 0;
 
       (lab.systems || []).forEach((sys, idx) => {
-        // Ensure id exists
         if (!sys.id) {
           sys.id = `${lab.id}-${idx + 1}-${Date.now()}`;
         }
@@ -60,7 +60,6 @@ class ExcelService {
         const isFaulty = sys.status === 'Faulty' || isMonFaulty || isCpuFaulty || isRemarkFaulty;
         sys.status = isFaulty ? 'Faulty' : 'Working';
 
-        // Dead stock formatted
         if (!sys.deadStockNo || sys.deadStockNo === '-') {
           if (sys.centralDeadStockNo || sys.deptDeadStockNo || sys.labDeadStockNo) {
             sys.deadStockNo = `CDS: ${sys.centralDeadStockNo || '-'} | DDS: ${sys.deptDeadStockNo || '-'} | LDS: ${sys.labDeadStockNo || '-'}`;
@@ -99,46 +98,41 @@ class ExcelService {
     });
 
     const workingPct = totalComputers > 0 ? ((totalWorking / totalComputers) * 100).toFixed(1) : '100.0';
+    const nowIso = new Date().toISOString();
 
-    this.lastSynced = new Date().toISOString();
-    this.cachedData.summary = {
-      totalLabs: this.cachedData.labs.length,
-      totalComputers: totalComputers,
-      workingComputers: totalWorking,
-      faultyComputers: totalFaulty,
-      workingPercentage: parseFloat(workingPct),
-      equipmentIssues: totalFaulty,
-      lastSynced: this.lastSynced
+    return {
+      labs: labs,
+      summary: {
+        totalLabs: labs.length,
+        totalComputers: totalComputers,
+        workingComputers: totalWorking,
+        faultyComputers: totalFaulty,
+        workingPercentage: parseFloat(workingPct),
+        equipmentIssues: totalFaulty,
+        lastSynced: nowIso
+      },
+      recentIssues: recentIssues,
+      supplierCounts: supplierCounts
     };
-    this.cachedData.recentIssues = recentIssues;
-    this.cachedData.supplierCounts = supplierCounts;
+  }
 
+  /**
+   * Recalculate all metrics and KPIs across current cached data
+   */
+  recalculateMetrics() {
+    if (!this.cachedData || !this.cachedData.labs) return;
+    const computed = this.computeAuditMetrics(this.cachedData.labs);
+    this.cachedData.summary = computed.summary;
+    this.cachedData.recentIssues = computed.recentIssues;
+    this.cachedData.supplierCounts = computed.supplierCounts;
+    this.lastSynced = computed.summary.lastSynced;
     return this.cachedData;
   }
 
   /**
-   * Parse audit workbook from disk (or buffer)
+   * Parse an ExcelJS Workbook instance into normalized labs array
    */
-  async readAuditWorkbook(buffer = null) {
-    const workbook = new ExcelJS.Workbook();
-    if (buffer) {
-      const safeBuffer = Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer);
-      try {
-        await workbook.xlsx.load(safeBuffer);
-      } catch (loadErr) {
-        const { Readable } = require('stream');
-        const readable = new Readable();
-        readable.push(safeBuffer);
-        readable.push(null);
-        await workbook.xlsx.read(readable);
-      }
-    } else {
-      if (!fs.existsSync(this.excelFilePath)) {
-        throw new Error(`Excel audit file not found at: ${this.excelFilePath}`);
-      }
-      await workbook.xlsx.readFile(this.excelFilePath);
-    }
-
+  parseWorkbookToLabs(workbook) {
     const labs = [];
 
     workbook.eachSheet((worksheet) => {
@@ -339,24 +333,15 @@ class ExcelService {
         const ddsVal = this.cleanCell(row.getCell(columnMap.deptDeadStock || 3));
         const ldsVal = this.cleanCell(row.getCell(columnMap.labDeadStock || 4));
 
-        let monStatus = '';
-        let cpuSerial = '';
-        let cpuStatus = '';
-        let purchaseDateVal = '';
-        let remarkVal = '';
+        let monStatus = this.cleanCell(row.getCell(columnMap.monitorStatus || 9));
+        let cpuSerial = this.cleanCell(row.getCell(columnMap.cpuSerial || 10));
+        let cpuStatus = this.cleanCell(row.getCell(columnMap.cpuStatus || 11));
+        let purchaseDateVal = this.cleanCell(row.getCell(columnMap.purchaseDate || 12));
+        let remarkVal = this.cleanCell(row.getCell(columnMap.remarks || 13));
 
-        if (sheetName.includes('ARVR') || sheetName.includes('234') || sheetName.includes('DSL') || sheetName.includes('235')) {
-          monStatus = this.cleanCell(row.getCell(8)) || this.cleanCell(row.getCell(9));
-          cpuSerial = this.cleanCell(row.getCell(10));
-          cpuStatus = this.cleanCell(row.getCell(11));
-          purchaseDateVal = this.cleanCell(row.getCell(12));
-          remarkVal = this.cleanCell(row.getCell(13));
-        } else {
+        // In DSL/ARVR files, columns might shift slightly
+        if ((!cpuStatus || cpuStatus === 'YES' || cpuStatus === 'NO') && !monStatus) {
           monStatus = this.cleanCell(row.getCell(8));
-          cpuSerial = this.cleanCell(row.getCell(9)) || this.cleanCell(row.getCell(10));
-          cpuStatus = this.cleanCell(row.getCell(10)) || this.cleanCell(row.getCell(11));
-          purchaseDateVal = this.cleanCell(row.getCell(12));
-          remarkVal = this.cleanCell(row.getCell(13));
         }
 
         const isMonFaulty = this.isFaultyValue(monStatus);
@@ -369,7 +354,7 @@ class ExcelService {
           formattedDSN = `CDS: ${cdsVal || '-'} | DDS: ${ddsVal || '-'} | LDS: ${ldsVal || '-'}`;
         }
 
-        const systemItem = {
+        systems.push({
           id: `${labId}-${r}`,
           srNo: parseInt(srVal) || systems.length + 1,
           labCode: labCode,
@@ -389,38 +374,79 @@ class ExcelService {
           supplier: supplierVal || 'Not Specified',
           purchaseDate: purchaseDateVal || '-',
           remarks: remarkVal
-        };
-
-        systems.push(systemItem);
+        });
       }
 
-      labs.push({
-        id: labId,
-        code: labCode,
-        name: labName || `${labCode} Laboratory`,
-        sheetName: sheetName,
-        room: roomNo || '234',
-        inCharge: labInCharge,
-        assistant: labAssistant,
-        cost: labCost,
-        area: labArea,
-        os: labOS,
-        tools: labTools,
-        hardware: labHardware,
-        browsers: labBrowsers,
-        misc: labMisc,
-        systems: systems
-      });
+      if (systems.length > 0) {
+        labs.push({
+          id: labId,
+          code: labCode,
+          name: labName || `${labCode} Laboratory`,
+          sheetName: sheetName,
+          room: roomNo || '234',
+          inCharge: labInCharge,
+          assistant: labAssistant,
+          cost: labCost,
+          area: labArea,
+          os: labOS,
+          tools: labTools,
+          hardware: labHardware,
+          browsers: labBrowsers,
+          misc: labMisc,
+          systems: systems
+        });
+      }
     });
 
-    this.cachedData = {
-      labs: labs,
-      summary: {},
-      recentIssues: [],
-      supplierCounts: {}
-    };
+    return labs;
+  }
 
-    this.recalculateMetrics();
+  /**
+   * Parse an uploaded buffer into audit data without modifying this.cachedData
+   */
+  async parseAuditWorkbookBuffer(buffer) {
+    const workbook = new ExcelJS.Workbook();
+    const safeBuffer = Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer);
+    try {
+      await workbook.xlsx.load(safeBuffer);
+    } catch (loadErr) {
+      const { Readable } = require('stream');
+      const readable = new Readable();
+      readable.push(safeBuffer);
+      readable.push(null);
+      await workbook.xlsx.read(readable);
+    }
+
+    const labs = this.parseWorkbookToLabs(workbook);
+    return this.computeAuditMetrics(labs);
+  }
+
+  /**
+   * Parse audit workbook from disk (or buffer) and update this.cachedData
+   */
+  async readAuditWorkbook(buffer = null) {
+    const workbook = new ExcelJS.Workbook();
+    if (buffer) {
+      const safeBuffer = Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer);
+      try {
+        await workbook.xlsx.load(safeBuffer);
+      } catch (loadErr) {
+        const { Readable } = require('stream');
+        const readable = new Readable();
+        readable.push(safeBuffer);
+        readable.push(null);
+        await workbook.xlsx.read(readable);
+      }
+    } else {
+      if (!fs.existsSync(this.excelFilePath)) {
+        throw new Error(`Excel audit file not found at: ${this.excelFilePath}`);
+      }
+      await workbook.xlsx.readFile(this.excelFilePath);
+    }
+
+    const labs = this.parseWorkbookToLabs(workbook);
+    this.cachedData = this.computeAuditMetrics(labs);
+    this.lastSynced = this.cachedData.summary.lastSynced;
     return this.cachedData;
   }
 
@@ -724,8 +750,11 @@ class ExcelService {
       console.warn('[ExcelService] Google Sheets is not configured. Falling back to local file persistence.');
     }
 
-    // Save to local file as complementary backup
+    // Save to local file as complementary backup with watcher paused
+    const { pauseWatcher, resumeWatcher } = require('../utils/watcher');
+    pauseWatcher();
     await this.saveToLocalExcelFile();
+    resumeWatcher(2000);
 
     return {
       cloudSynced,
@@ -742,7 +771,7 @@ class ExcelService {
 
     if (googleSheetsService.isConfigured()) {
       try {
-        console.log('[ExcelService] Syncing full workbook to Google Sheets...');
+        console.log('[ExcelService] Syncing full workbook to Google Sheets via non-destructive update...');
         await googleSheetsService.syncWorkbookToGoogleSheets(this.cachedData);
         cloudSynced = true;
       } catch (err) {
@@ -752,7 +781,11 @@ class ExcelService {
       }
     }
 
+    const { pauseWatcher, resumeWatcher } = require('../utils/watcher');
+    pauseWatcher();
     await this.saveToLocalExcelFile();
+    resumeWatcher(2000);
+
     return { cloudSynced, cloudError };
   }
 
@@ -1159,66 +1192,103 @@ class ExcelService {
   }
 
   /**
-   * Import confirmed uploaded Excel buffer into persistent storage
+   * Import confirmed uploaded Excel buffer with non-destructive cloud persistence
+   * and strict read-back verification before mutating memory cache or broadcasting.
    */
   async importUploadedExcel(buffer, originalname = '') {
-    console.log(`[ExcelService] Processing confirmed Excel upload: "${originalname}" (${buffer.length} bytes)...`);
-
-    // 1. Validate schema before altering any data
-    const preview = await this.validateAndPreviewExcel(buffer, originalname);
-    if (!preview.isValid) {
-      throw new Error(`Validation failed: ${preview.validationErrors.join('; ')}`);
+    if (this.isSyncingOrUploading) {
+      throw new Error('A synchronization or upload process is already active. Please wait a moment.');
     }
 
-    // 2. Parse uploaded workbook
-    await this.readAuditWorkbook(buffer);
+    this.isSyncingOrUploading = true;
+    const { pauseWatcher, resumeWatcher } = require('../utils/watcher');
 
-    // 3. Save to local backup file
     try {
-      fs.writeFileSync(this.excelFilePath, buffer);
-      console.log(`[ExcelService] Saved uploaded file to local disk: ${this.excelFilePath}`);
-    } catch (err) {
-      console.warn('[ExcelService] Warning: Could not write buffer directly to disk:', err.message);
-    }
+      console.log(`[ExcelService] Processing confirmed Excel upload: "${originalname}" (${buffer.length} bytes)...`);
 
-    // 4. Persist to Google Sheets if configured
-    let persistResult = { cloudSynced: false };
-    if (googleSheetsService.isConfigured()) {
-      try {
-        console.log('[ExcelService] Syncing imported workbook to Google Sheets...');
-        persistResult = await this.persistFullWorkbook();
-      } catch (err) {
-        console.error('[ExcelService] Google Sheets sync failed on import:', err.message);
-        throw new Error(`Google Sheets sync failed: ${err.message}`);
+      // 1. Validate schema before altering any state
+      const preview = await this.validateAndPreviewExcel(buffer, originalname);
+      if (!preview.isValid) {
+        throw new Error(`Validation failed: ${preview.validationErrors.join('; ')}`);
       }
-    } else {
-      console.warn('[ExcelService] Google Sheets not configured. Preserving local cache.');
-    }
 
-    return {
-      success: true,
-      summary: this.cachedData.summary,
-      labsCount: this.cachedData.labs.length,
-      ...persistResult
-    };
+      // 2. Parse candidate audit data from uploaded buffer without mutating this.cachedData
+      const parsedCandidate = await this.parseAuditWorkbookBuffer(buffer);
+      const targetTotal = parsedCandidate.summary.totalComputers;
+      const targetWorking = parsedCandidate.summary.workingComputers;
+      const targetFaulty = parsedCandidate.summary.faultyComputers;
+
+      console.log(`[ExcelService] Candidate parsed: ${targetTotal} total (${targetWorking} working, ${targetFaulty} faulty) across ${parsedCandidate.labs.length} labs.`);
+
+      // 3. Pause file watcher to avoid feedback loop during file write
+      pauseWatcher();
+
+      let cloudSynced = false;
+
+      // 4. If Google Sheets is configured: write non-destructively and perform read-back verification
+      if (googleSheetsService.isConfigured()) {
+        console.log('[ExcelService] Persisting audit records to Google Sheets via atomic batch update...');
+        await googleSheetsService.updateAuditSheetsNonDestructive(parsedCandidate.labs);
+
+        console.log('[ExcelService] Performing read-back verification from Google Sheets...');
+        const verifiedCandidate = await this.fetchAndParseFromGoogleSheets();
+
+        if (!verifiedCandidate || !verifiedCandidate.summary) {
+          throw new Error('Failed to read back audit records from Google Sheets for verification.');
+        }
+
+        const verifiedTotal = verifiedCandidate.summary.totalComputers;
+        const verifiedWorking = verifiedCandidate.summary.workingComputers;
+        const verifiedFaulty = verifiedCandidate.summary.faultyComputers;
+
+        if (
+          verifiedTotal !== targetTotal ||
+          verifiedWorking !== targetWorking ||
+          verifiedFaulty !== targetFaulty
+        ) {
+          console.error(`[ExcelService] Read-back mismatch! Target: ${targetTotal}/${targetWorking}/${targetFaulty}, Verified: ${verifiedTotal}/${verifiedWorking}/${verifiedFaulty}`);
+          throw new Error(`Cloud synchronization verification failed: Expected ${targetTotal} computers (${targetWorking} working, ${targetFaulty} faulty), but Google Sheets read-back returned ${verifiedTotal} computers (${verifiedWorking} working, ${verifiedFaulty} faulty). Reverting upload.`);
+        }
+
+        console.log(`[ExcelService] ✓ Cloud persistence verified! Google Sheets records match uploaded workbook (${verifiedTotal} total, ${verifiedWorking} working, ${verifiedFaulty} faulty).`);
+
+        // Read-back verification succeeded: commit verified data to memory cache
+        this.cachedData = verifiedCandidate;
+        this.lastSynced = verifiedCandidate.summary.lastSynced;
+        cloudSynced = true;
+      } else {
+        console.warn('[ExcelService] Google Sheets not configured. Committing to local memory cache.');
+        this.cachedData = parsedCandidate;
+        this.lastSynced = parsedCandidate.summary.lastSynced;
+      }
+
+      // 5. Save buffer to local disk backup
+      try {
+        fs.writeFileSync(this.excelFilePath, buffer);
+        console.log(`[ExcelService] Saved verified workbook to local disk backup: ${this.excelFilePath}`);
+      } catch (err) {
+        console.warn('[ExcelService] Warning: Could not write buffer directly to disk:', err.message);
+      }
+
+      // 6. Resume file watcher with safety buffer
+      resumeWatcher(2500);
+
+      return {
+        success: true,
+        summary: this.cachedData.summary,
+        labsCount: this.cachedData.labs.length,
+        cloudSynced
+      };
+    } finally {
+      this.isSyncingOrUploading = false;
+    }
   }
 
   /**
-   * Synchronize the latest state from Google Sheets into memory and backup to local file.
-   * Ensures that on Render restarts, any changes saved to Google Sheets are automatically restored.
+   * Parse 2D row data from Google Sheets into full audit structure
    */
-  async syncFromGoogleSheets() {
-    if (!googleSheetsService.isConfigured()) {
-      return null;
-    }
-
-    const allSheets = await googleSheetsService.readAllSheets();
-    const sheetTitles = Object.keys(allSheets);
-
-    if (sheetTitles.length === 0) {
-      console.warn('[ExcelService] No sheets found in Google Sheets to sync.');
-      return null;
-    }
+  parseGoogleSheetsToAuditData(allSheets) {
+    if (!allSheets || Object.keys(allSheets).length === 0) return null;
 
     const labs = [];
 
@@ -1438,20 +1508,45 @@ class ExcelService {
       }
     }
 
-    if (labs.length > 0) {
-      this.cachedData = {
-        labs: labs,
-        summary: {},
-        recentIssues: [],
-        supplierCounts: {}
-      };
-      this.recalculateMetrics();
-      // Also backup to local file
-      await this.saveToLocalExcelFile();
-      console.log(`[ExcelService] Synced ${labs.length} laboratories and ${this.cachedData.summary.totalComputers} computers from Google Sheets.`);
+    return this.computeAuditMetrics(labs);
+  }
+
+  /**
+   * Read raw sheets from Google Sheets and parse into full audit structure
+   */
+  async fetchAndParseFromGoogleSheets() {
+    const allSheets = await googleSheetsService.readAllSheets();
+    return this.parseGoogleSheetsToAuditData(allSheets);
+  }
+
+  /**
+   * Synchronize the latest state from Google Sheets into memory and backup to local file.
+   * Ensures that on Render restarts, any changes saved to Google Sheets are automatically restored.
+   */
+  async syncFromGoogleSheets() {
+    if (!googleSheetsService.isConfigured() || this.isSyncingOrUploading) {
+      return null;
     }
 
-    return this.cachedData;
+    this.isSyncingOrUploading = true;
+    const { pauseWatcher, resumeWatcher } = require('../utils/watcher');
+
+    try {
+      const synced = await this.fetchAndParseFromGoogleSheets();
+      if (synced && synced.labs && synced.labs.length > 0) {
+        this.cachedData = synced;
+        this.lastSynced = synced.summary.lastSynced;
+
+        pauseWatcher();
+        await this.saveToLocalExcelFile();
+        resumeWatcher(2000);
+
+        console.log(`[ExcelService] Synced ${this.cachedData.labs.length} laboratories and ${this.cachedData.summary.totalComputers} computers from Google Sheets.`);
+      }
+      return this.cachedData;
+    } finally {
+      this.isSyncingOrUploading = false;
+    }
   }
 }
 

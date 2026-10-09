@@ -2,6 +2,20 @@ const chokidar = require('chokidar');
 const path = require('path');
 const excelService = require('../services/excelService');
 
+let isWatcherPaused = false;
+
+function pauseWatcher() {
+  isWatcherPaused = true;
+  console.log('[Watcher] File watcher paused for programmatic write operation.');
+}
+
+function resumeWatcher(delayMs = 1500) {
+  setTimeout(() => {
+    isWatcherPaused = false;
+    console.log('[Watcher] File watcher resumed.');
+  }, delayMs);
+}
+
 function initWatcher(io) {
   const filePath = excelService.getFilePath();
   console.log(`[Watcher] Initializing Chokidar file watcher on: ${filePath}`);
@@ -18,11 +32,21 @@ function initWatcher(io) {
   });
 
   const handleFileChange = async (eventType) => {
+    if (isWatcherPaused || excelService.isSyncingOrUploading) {
+      console.log(`[Watcher] Ignoring file event "${eventType}" on ${filePath} (watcher paused or sync/upload in flight).`);
+      return;
+    }
+
     console.log(`[Watcher] Detected file event: ${eventType} on ${filePath}`);
 
     if (debounceTimer) clearTimeout(debounceTimer);
 
     debounceTimer = setTimeout(async () => {
+      if (isWatcherPaused || excelService.isSyncingOrUploading) {
+        console.log(`[Watcher] Debounced action cancelled (watcher paused or sync/upload in flight).`);
+        return;
+      }
+
       try {
         console.log('[Watcher] Re-reading Excel workbook and updating cache...');
         const updatedData = await excelService.readAuditWorkbook();
@@ -48,4 +72,4 @@ function initWatcher(io) {
   return watcher;
 }
 
-module.exports = { initWatcher };
+module.exports = { initWatcher, pauseWatcher, resumeWatcher };

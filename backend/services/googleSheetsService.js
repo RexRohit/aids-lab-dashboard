@@ -439,50 +439,234 @@ class GoogleSheetsService {
   }
 
   /**
-   * Sync complete cached audit data to Google Sheets
+   * Resolve existing worksheet tab for a given lab object
+   */
+  findLabWorksheetTab(lab, existingTitles) {
+    if (lab.sheetName && existingTitles.includes(lab.sheetName)) {
+      return lab.sheetName;
+    }
+    const roomStr = String(lab.room || '').trim();
+    if (roomStr) {
+      const matchByRoom = existingTitles.find(t => 
+        t.includes(roomStr) && 
+        !t.toLowerCase().includes('summary') && 
+        t.toLowerCase() !== 'sheet2'
+      );
+      if (matchByRoom) return matchByRoom;
+    }
+    const cleanCode = (lab.code || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+    if (cleanCode) {
+      const matchByCode = existingTitles.find(t => {
+        if (t.toLowerCase().includes('summary') || t.toLowerCase() === 'sheet2') return false;
+        const cleanT = t.toLowerCase().replace(/[^a-z0-9]/g, '');
+        return cleanT.includes(cleanCode) || cleanCode.includes(cleanT);
+      });
+      if (matchByCode) return matchByCode;
+    }
+    return null;
+  }
+
+  /**
+   * Non-destructive, atomic update of Google Sheets data.
+   * - Preserves title, metadata, and primary headers (Rows 1-6) on all lab sheets.
+   * - Preserves title and header rows (Rows 1-4) on Summary Sheet.
+   * - Updates ONLY the equipment rows starting from Row 7 onwards.
+   * - Updates Summary Sheet rows A5:K{4 + labs.length}.
+   * - Uses batchUpdate to perform ALL sheet updates in a single atomic Google Sheets API request.
+   * - Clears only trailing rows (if any) via batchClear to prevent ghost records.
+   * - NEVER touches or modifies Sheet2.
+   */
+  async updateAuditSheetsNonDestructive(labs = []) {
+    if (!this.isConfigured()) {
+      throw new Error('Google Sheets is not configured in environment variables.');
+    }
+
+    const sheets = await this.getSheetsClient();
+    const meta = await sheets.spreadsheets.get({ spreadsheetId: this.sheetId });
+    const existingTitles = (meta.data.sheets || []).map(s => s.properties.title);
+
+    const valueDataEntries = [];
+    const clearRanges = [];
+
+    // 1. Summary Sheet update (Rows 5 to 4 + labs.length)
+    const summaryTitle = existingTitles.find(t => t.toLowerCase().includes('summary')) || 'Summary Sheet';
+    const summaryRows = [];
+
+    labs.forEach((lab, idx) => {
+      const tabTitle = this.findLabWorksheetTab(lab, existingTitles) || lab.sheetName || `${lab.code}(${lab.room})`;
+      summaryRows.push([
+        idx + 1,
+        tabTitle,
+        lab.code || '',
+        lab.room || '',
+        lab.inCharge || 'Not Specified',
+        lab.assistant || 'Not Specified',
+        '20',
+        '20',
+        String(lab.totalCount || (lab.systems ? lab.systems.length : 0)),
+        String(lab.workingCount || 0),
+        String(lab.faultyCount || 0)
+      ]);
+    });
+
+    if (summaryRows.length > 0) {
+      valueDataEntries.push({
+        range: `'${summaryTitle}'!A5:K${4 + summaryRows.length}`,
+        values: summaryRows
+      });
+    }
+
+    // 2. Individual Lab Sheets update
+    for (const lab of labs) {
+      const targetTitle = this.findLabWorksheetTab(lab, existingTitles);
+      if (!targetTitle) {
+        console.warn(`[GoogleSheets] Could not resolve existing sheet for lab ${lab.code} (${lab.room}). Skipping.`);
+        continue;
+      }
+
+      const systems = lab.systems || [];
+      const labRows = systems.map((item, index) => [
+        item.srNo ?? (index + 1),
+        item.centralDeadStockNo || '-',
+        item.deptDeadStockNo || '-',
+        item.labDeadStockNo || '-',
+        item.supplier || 'Not Specified',
+        item.itemType || 'Desktop PC',
+        item.systemName || item.monitorSerial || `System ${index + 1}`,
+        item.monitorSerial || '-',
+        item.monitorStatus || (item.status === 'Working' ? 'YES' : 'NO'),
+        item.cpuSerial || '-',
+        item.cpuStatus || (item.status === 'Working' ? 'YES' : 'NO'),
+        item.purchaseDate || '-',
+        item.remarks || ''
+      ]);
+
+      if (labRows.length > 0) {
+        const startRow = 7;
+        const endRow = startRow + labRows.length - 1;
+        valueDataEntries.push({
+          range: `'${targetTitle}'!A${startRow}:M${endRow}`,
+          values: labRows
+        });
+
+        // Clear trailing rows if existing content had more rows (up to row 100)
+        const trailingStart = endRow + 1;
+        if (trailingStart <= 100) {
+          clearRanges.push(`'${targetTitle}'!A${trailingStart}:M100`);
+        }
+      }
+    }
+
+    console.log(`[GoogleSheets] Executing atomic batchUpdate for ${valueDataEntries.length} ranges across Google Sheet (${this.sheetId})...`);
+
+    // Execute atomic batch update for all values
+    await sheets.spreadsheets.values.batchUpdate({
+      spreadsheetId: this.sheetId,
+      requestBody: {
+        valueInputOption: 'USER_ENTERED',
+        data: valueDataEntries
+      }
+    });
+
+    // If any trailing ranges need clearing, clear them in a single batch
+    if (clearRanges.length > 0) {
+      try {
+        await sheets.spreadsheets.values.batchClear({
+          spreadsheetId: this.sheetId,
+          requestBody: {
+            ranges: clearRanges
+          }
+        });
+      } catch (clearErr) {
+        console.warn('[GoogleSheets] Non-critical warning clearing trailing ranges:', clearErr.message);
+      }
+    }
+
+    console.log('[GoogleSheets] ✓ Atomic non-destructive batch update completed successfully.');
+    return {
+      success: true,
+      updatedRangesCount: valueDataEntries.length,
+      timestamp: new Date().toISOString()
+    };
+  }
+
+  /**
+   * Sync complete cached audit data to Google Sheets using atomic non-destructive batch update
    */
   async syncWorkbookToGoogleSheets(cachedData) {
     if (!this.isConfigured()) {
       throw new Error('Google Sheets is not configured in environment variables.');
     }
 
-    const { labs = [] } = cachedData;
-    console.log(`[GoogleSheets] Beginning full workbook sync to Google Sheet (${this.sheetId})...`);
+    const { labs = [] } = cachedData || {};
+    console.log(`[GoogleSheets] Beginning non-destructive sync to Google Sheet (${this.sheetId})...`);
 
-    // 1. Write Summary Sheet
-    const summaryRows = this.buildSummarySheetRows(labs);
-    await this.writeSheetValues('Summary', summaryRows);
-
-    // 2. Write each lab worksheet
-    for (const lab of labs) {
-      const sheetName = lab.sheetName || `${lab.code} - Room ${lab.room}`;
-      const labRows = this.buildLabSheetRows(lab);
-      await this.writeSheetValues(sheetName, labRows);
-    }
-
-    console.log('[GoogleSheets] Full workbook sync complete.');
+    const result = await this.updateAuditSheetsNonDestructive(labs);
     return {
       success: true,
       sheetId: this.sheetId,
-      syncedAt: new Date().toISOString()
+      syncedAt: result.timestamp
     };
   }
 
   /**
-   * Update a specific lab sheet in Google Sheets
+   * Update a specific lab sheet non-destructively in Google Sheets
    */
   async updateLabSheet(lab) {
     if (!this.isConfigured()) {
       throw new Error('Google Sheets is not configured.');
     }
 
-    const sheetName = lab.sheetName || `${lab.code} - Room ${lab.room}`;
-    const labRows = this.buildLabSheetRows(lab);
-    await this.writeSheetValues(sheetName, labRows);
+    const sheets = await this.getSheetsClient();
+    const meta = await sheets.spreadsheets.get({ spreadsheetId: this.sheetId });
+    const existingTitles = (meta.data.sheets || []).map(s => s.properties.title);
+    const targetTitle = this.findLabWorksheetTab(lab, existingTitles);
+
+    if (!targetTitle) {
+      throw new Error(`Could not locate worksheet tab in Google Sheets for lab ${lab.code}`);
+    }
+
+    const systems = lab.systems || [];
+    const labRows = systems.map((item, index) => [
+      item.srNo ?? (index + 1),
+      item.centralDeadStockNo || '-',
+      item.deptDeadStockNo || '-',
+      item.labDeadStockNo || '-',
+      item.supplier || 'Not Specified',
+      item.itemType || 'Desktop PC',
+      item.systemName || item.monitorSerial || `System ${index + 1}`,
+      item.monitorSerial || '-',
+      item.monitorStatus || (item.status === 'Working' ? 'YES' : 'NO'),
+      item.cpuSerial || '-',
+      item.cpuStatus || (item.status === 'Working' ? 'YES' : 'NO'),
+      item.purchaseDate || '-',
+      item.remarks || ''
+    ]);
+
+    const startRow = 7;
+    const endRow = startRow + labRows.length - 1;
+
+    await sheets.spreadsheets.values.update({
+      spreadsheetId: this.sheetId,
+      range: `'${targetTitle}'!A${startRow}:M${endRow}`,
+      valueInputOption: 'USER_ENTERED',
+      requestBody: {
+        values: labRows
+      }
+    });
+
+    if (endRow + 1 <= 100) {
+      try {
+        await sheets.spreadsheets.values.clear({
+          spreadsheetId: this.sheetId,
+          range: `'${targetTitle}'!A${endRow + 1}:M100`
+        });
+      } catch (_) {}
+    }
 
     return {
       success: true,
-      sheetName,
+      sheetName: targetTitle,
       updatedAt: new Date().toISOString()
     };
   }
