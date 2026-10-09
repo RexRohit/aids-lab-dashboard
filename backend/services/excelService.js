@@ -976,17 +976,187 @@ class ExcelService {
 
 
   /**
+   * Parse Sheet2 which contains lab metadata blocks.
+   * Each block ends with a merged section divider row (lab name spanning B through K).
+   * The metadata for that lab is in column B of the rows BEFORE the divider.
+   * Also reads LABORATORY INFORMATION footer at the bottom for the sheet's own lab.
+   * Returns: { labId: { inCharge, assistant, area, os, tools, browsers, misc, hardware, cost } }
+   */
+  parseSheet2Metadata(rows) {
+    // Each section divider row: B through K all have the same lab name string
+    // Pattern -> labId mapping
+    const LAB_SECTION_PATTERNS = [
+      { pattern: /artificial intelligence lab/i, id: 'ail' },
+      { pattern: /project lab/i, id: 'pl' },
+      { pattern: /data science lab/i, id: 'dsl' },
+      { pattern: /open source lab/i, id: 'osl' },
+      { pattern: /software lab/i, id: 'swl' },
+      { pattern: /computer laboratory-?ii|cl-?ii|ar[\s/]*vr/i, id: 'ar-vr' },
+    ];
+
+    const metadata = {};
+
+    // Find ALL section divider rows
+    // 1. Hard divider: B through K all have the same lab name (span >= 5)
+    // 2. Soft divider: B has a lab name and C has "-" or is empty (AIL's single-column label)
+    const dividers = []; // { dividerRow, labId }
+    for (let r = 0; r < rows.length; r++) {
+      const row = rows[r] || [];
+      const b = String(row[1] || '').trim();
+      if (!b || b.length < 6) continue;
+
+      const colsB_K = row.slice(1, Math.min(row.length, 11));
+      const same = colsB_K.filter(c => String(c || '').trim() === b).length;
+      const isDivider = same >= 5;
+
+      // Soft divider: B is a known lab name and C/D are "-" or empty
+      const cVal = String(row[2] || '').trim();
+      const isSoftDivider = !isDivider && (cVal === '-' || cVal === '') && LAB_SECTION_PATTERNS.some(({ pattern }) => pattern.test(b));
+
+      if (isDivider || isSoftDivider) {
+        for (const { pattern, id } of LAB_SECTION_PATTERNS) {
+          if (pattern.test(b)) {
+            dividers.push({ dividerRow: r, labId: id });
+            break;
+          }
+        }
+      }
+    }
+
+
+    const classifyField = (value, meta) => {
+      const v = value.trim();
+      // Area: looks like "68 Sq.m.", "67.99 Sq.m.", "95.04"
+      if (/^-?\d+\.?\d*\s*(?:sq\.?\s*m\.?)?$/i.test(v.replace(/,/g, '')) && parseFloat(v) > 20 && parseFloat(v) < 1000) return 'area';
+      if (/sq\.?\s*m\.?/i.test(v)) return 'area';
+      // Faculty
+      if (/^prof\.|^dr\./i.test(v)) return 'inCharge';
+      if (/^(?:mr\.|mrs\.|ms\.)/i.test(v)) return meta.inCharge ? 'assistant' : 'inCharge';
+      // OS
+      if (/windows|ubuntu|linux|macos/i.test(v) && !meta.os) return 'os';
+      // Tools/Software
+      if (/python|pycharm|java|c\+\+|matlab|turboc|unity|blender|visual studio|collab|colab|jupyter|arduino|netbeans|google colab|photoshop/i.test(v) && !meta.tools) return 'tools';
+      // Browsers
+      if (/firefox|chrome|edge|safari/i.test(v) && !meta.browsers) return 'browsers';
+      // Misc software
+      if (/\b(?:office|acrobat|reader|vlc)\b/i.test(v) && !meta.misc) return 'misc';
+      // Hardware
+      if (/intel|processor|ghz|\bram\b|\bmodel\b|lenovo|asus|dell|\bhp\b|core\(tm\)|cpu @|thinkcentre|thinkvision|thinkpad/i.test(v) && !meta.hardware) return 'hardware';
+      // Cost
+      if (/[\d,]{4,}\s*\/-/.test(v) && !meta.cost) return 'cost';
+      return null;
+    };
+
+    // Process each block: rows between previous divider and current divider
+    // Block structure: [...metadata rows...] [DIVIDER for this lab]
+    // So the DIVIDER row tells us which lab the preceding rows belong to.
+    // Prepend a synthetic start at row 6 (first data row after header)
+    const allBoundaries = [{ dividerRow: 5, labId: null }, ...dividers];
+
+    for (let i = 1; i < allBoundaries.length; i++) {
+      const { dividerRow, labId } = allBoundaries[i];
+      const prevDividerRow = allBoundaries[i - 1].dividerRow;
+      const meta = { inCharge: '', assistant: '', area: '', os: '', tools: '', browsers: '', misc: '', hardware: '', cost: '' };
+
+      // Scan column B in rows BETWEEN previous divider and current divider
+      for (let r = prevDividerRow + 1; r < dividerRow; r++) {
+        const bVal = String((rows[r] || [])[1] || '').trim();
+        if (!bVal || bVal === '-') continue;
+        const field = classifyField(bVal, meta);
+        if (field && !meta[field]) meta[field] = bVal;
+      }
+
+      // Clean area (remove leading dash)
+      if (meta.area) meta.area = meta.area.replace(/^[-\s]+/, '').trim();
+      metadata[labId] = meta;
+    }
+
+    // Read the LABORATORY INFORMATION & SPECIFICATIONS footer section at the bottom
+    // This belongs to Sheet2's own lab (ARVR, Room 234, Prof. A. S. Kale)
+    const h3InCharge = String((rows[2] || [])[7] || '').trim(); // H3
+    const h4Assistant = String((rows[3] || [])[7] || '').trim(); // H4
+    // Sheet2's own labId based on its header
+    const sheetLabId = /kale/i.test(h3InCharge) ? 'ar-vr' : null;
+
+    for (let r = 0; r < rows.length; r++) {
+      const a = String((rows[r] || [])[0] || '').trim();
+      if (!/area of laboratory/i.test(a)) continue;
+      const lid = sheetLabId || 'ar-vr';
+      if (!metadata[lid]) metadata[lid] = { inCharge: '', assistant: '', area: '', os: '', tools: '', browsers: '', misc: '', hardware: '', cost: '' };
+      const m = metadata[lid];
+      const specFields = ['area', 'os', 'tools', 'browsers', 'misc', 'hardware'];
+      for (let i = 0; i < specFields.length; i++) {
+        const v = String(((rows[r + i] || [])[1]) || '').trim();
+        if (v && v !== 'N/A' && !m[specFields[i]]) m[specFields[i]] = v;
+      }
+      if (h3InCharge && h3InCharge !== 'Not Specified' && !m.inCharge) m.inCharge = h3InCharge;
+      if (h4Assistant && h4Assistant !== 'Not Specified' && !m.assistant) m.assistant = h4Assistant;
+      if (m.area) m.area = m.area.replace(/^[-\s]+/, '').trim();
+      break;
+    }
+
+    return metadata;
+  }
+
+  /**
+   * Parse the Summary Sheet to get lab assistant names.
+   * Summary Sheet row format: [Sr, LabName, Code, Room, Lab In-Charge, Lab Assistant, ...]
+   * E=InCharge (col index 4), F=Assistant (col index 5)
+   */
+  parseSummaryAssistants(rows) {
+    const result = {}; // labId -> { inCharge, assistant }
+    const LAB_ID_MAP = {
+      'swl': ['swl', '202'],
+      'ar-vr': ['arvr', '234', 'cl-ii', 'ar/vr', 'ar vr'],
+      'dsl': ['dsl', '235'],
+      'ail': ['ail', '236'],
+      'osl': ['osl', '238'],
+      'pl': ['pl', '239'],
+    };
+
+    for (const row of rows) {
+      const labName = String(row[1] || '').toLowerCase().trim();
+      if (!labName) continue;
+
+      let labId = null;
+      for (const [id, patterns] of Object.entries(LAB_ID_MAP)) {
+        if (patterns.some(p => labName.includes(p))) { labId = id; break; }
+      }
+      if (!labId) continue;
+
+      const inCharge = String(row[4] || '').trim().replace(/^Lab Assistant\s*:-?\s*/i, '').replace(/^Lab In-?Charge\s*:-?\s*/i, '').trim();
+      const assistant = String(row[5] || '').trim().replace(/^Lab Assistant\s*:-?\s*/i, '').replace(/^Lab In-?Charge\s*:-?\s*/i, '').trim();
+
+      result[labId] = { inCharge, assistant };
+    }
+    return result;
+  }
+
+  /**
    * Parse 2D row data from Google Sheets into full audit structure
    */
   parseGoogleSheetsToAuditData(allSheets) {
     if (!allSheets || Object.keys(allSheets).length === 0) return null;
+
+    // Step 1: Extract metadata from Sheet2 and Summary Sheet
+    let sheet2Meta = {};
+    let summaryMeta = {};
+
+    for (const [sheetTitle, rows] of Object.entries(allSheets)) {
+      if (/^sheet\s*2$/i.test(sheetTitle.trim())) {
+        sheet2Meta = this.parseSheet2Metadata(rows);
+      }
+      if (/summary/i.test(sheetTitle)) {
+        summaryMeta = this.parseSummaryAssistants(rows);
+      }
+    }
 
     const labs = [];
 
     for (const [sheetTitle, rows] of Object.entries(allSheets)) {
       if (
         sheetTitle.toLowerCase().includes('summary') || 
-        sheetTitle.toLowerCase().startsWith('sheet') ||
+        /^sheet\s*2$/i.test(sheetTitle.trim()) ||
         !rows || rows.length < 6
       ) {
         continue;
@@ -1179,24 +1349,63 @@ class ExcelService {
       }
 
       if (systems.length > 0) {
+        // Merge metadata: priority order = sheet2Meta > summaryMeta > parsed-from-sheet-header
+        const s2 = sheet2Meta[labId] || {};
+        const sm = summaryMeta[labId] || {};
+
+        const resolvedInCharge = (s2.inCharge && s2.inCharge !== 'Not Specified') ? s2.inCharge
+          : (sm.inCharge && sm.inCharge !== 'Not Specified' && !/Lab Assistant/i.test(sm.inCharge)) ? sm.inCharge
+          : labInCharge;
+
+        // Summary sheet E column contains "Lab Assistant :- Name" which is actually inCharge for some labs
+        // The F column (assistant) is typically also "Lab Assistant :- Name"
+        // We use the Summary inCharge field if it starts with Prof/Dr/Mr/Ms
+        const resolvedAssistant = (s2.assistant && s2.assistant !== 'Not Specified') ? s2.assistant
+          : (sm.assistant && sm.assistant !== 'Not Specified' && !/^Lab Assistant\s*:-?\s*$/i.test(sm.assistant)) ? sm.assistant
+          : labAssistant;
+
+        // Extract actual names from "Lab Assistant :- Ms. Shraddha A Gaikwad" patterns in summaryMeta
+        const extractName = (val) => {
+          if (!val) return val;
+          const m = val.match(/(?:Lab\s+(?:In-?Charge|Assistant)\s*:-?\s*)(.+)/i);
+          return m ? m[1].trim() : val;
+        };
+
+        // Use Summary sheet for assistant specifically since it has cleaner data
+        let finalInCharge = resolvedInCharge;
+        let finalAssistant = resolvedAssistant;
+        if (sm.inCharge) {
+          const extracted = extractName(sm.inCharge);
+          if (extracted && /prof\.|dr\.|mr\.|mrs\.|ms\./i.test(extracted) && finalInCharge === 'Not Specified') {
+            finalInCharge = extracted;
+          }
+        }
+        if (sm.assistant) {
+          const extracted = extractName(sm.assistant);
+          if (extracted && /prof\.|dr\.|mr\.|mrs\.|ms\./i.test(extracted) && finalAssistant === 'Not Specified') {
+            finalAssistant = extracted;
+          }
+        }
+
         labs.push({
           id: labId,
           code: labCode,
           name: labName,
           sheetName: sheetTitle,
           room: roomNo || '234',
-          inCharge: labInCharge,
-          assistant: labAssistant,
-          cost: labCost,
-          area: labArea,
-          os: labOS,
-          tools: labTools,
-          hardware: labHardware,
-          browsers: labBrowsers,
-          misc: labMisc,
+          inCharge: finalInCharge !== 'Not Specified' ? finalInCharge : (s2.inCharge || labInCharge),
+          assistant: finalAssistant !== 'Not Specified' ? finalAssistant : (s2.assistant || labAssistant),
+          cost: (s2.cost && s2.cost !== 'N/A') ? s2.cost : labCost,
+          area: (s2.area && s2.area !== 'N/A') ? s2.area : labArea,
+          os: (s2.os && s2.os !== 'N/A') ? s2.os : labOS,
+          tools: (s2.tools && s2.tools !== 'N/A') ? s2.tools : labTools,
+          hardware: (s2.hardware && s2.hardware !== 'N/A') ? s2.hardware : labHardware,
+          browsers: (s2.browsers && s2.browsers !== 'N/A') ? s2.browsers : labBrowsers,
+          misc: (s2.misc && s2.misc !== 'N/A') ? s2.misc : labMisc,
           systems: systems
         });
       }
+
     }
 
     return this.computeAuditMetrics(labs);
